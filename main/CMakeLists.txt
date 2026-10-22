@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "main.c"
         "comun/estado.c"
+        "comun/bus_i2c.c"
         "entradas/entradas.c"
         "entradas/teclado.c"
         "control/tiempos.c"

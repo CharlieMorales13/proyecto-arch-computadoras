@@ -49,6 +49,7 @@ tiempos → entradas → teclado → fsm_diag → fsm_ecu → km_rpm → persist
 | [docs/03_arquitectura_firmware.md](docs/03_arquitectura_firmware.md) | Ciclo de 10 ms, `EstadoECU`, dueños de cada campo, máquina de estados, watchdog y tiempos medidos |
 | [docs/04_cambios_al_documento.md](docs/04_cambios_al_documento.md) | Diferencias con el Segundo Avance: lo resuelto, lo ajustado en el código y lo que falta agregar |
 | [docs/05_configuracion_entorno.md](docs/05_configuracion_entorno.md) | Cómo instalar ESP-IDF 6.1, clonar, compilar y grabar el proyecto en una computadora nueva |
+| [docs/06_avance_hardware.md](docs/06_avance_hardware.md) | Rama `avance-hardware`: versión con motor DC y relé, LEDs directos, LCD 16x2 y joystick; conexiones y demostración |
 
 El mapa de pines está en [main/comun/pines.h](main/comun/pines.h) y los valores numéricos (umbrales,
 RPM, calibración de servos) en [main/comun/config.h](main/comun/config.h).

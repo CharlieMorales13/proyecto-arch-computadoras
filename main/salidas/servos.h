@@ -1,22 +1,19 @@
 /*
- * servos.h — Dos PWM de 50 Hz con el periférico LEDC (14 bits)
- * (equivale a ctrl_pwm_servos en VHDL).
+ * servos.h — Tracción (equivale a ctrl_pwm_servos en VHDL).
  *
- * Los servos son de giro continuo: el ancho de pulso fija la VELOCIDAD,
- * no el ángulo. 1500 µs = quieto; marcha 1..4 = ±100, ±200, ±300, ±400 µs.
- * El servo derecho recibe el pulso reflejado (gira al revés) porque va
- * montado en espejo.
- *
- *   duty = t / 20000 µs * 16384      (1500 µs -> 1229, 1900 -> 1556, 1100 -> 901)
+ * [AVANCE] El módulo conserva su nombre y su interfaz, pero en esta rama
+ * maneja un motor DC con reductor a través de un relé en lugar de dos
+ * servos. main.c no cambia.
  *
  * La velocidad (0..10000) sube a 50 %/s y baja según el freno: delantero
  * -75 %/s, trasero -25 %/s, ambos (ABS) -100 %/s; sin freno -30 %/s.
- * En APAGADO se cortan los pulsos.
+ * Igual que con los servos, km_rpm usa esa velocidad para el kilometraje y
+ * fsm_ecu para saber si FRENADO regresa a EN_MARCHA o a NEUTRAL.
  *
- * La velocidad se calcula cada 10 ms, pero el PWM solo se escribe cuando el
- * pulso cambia y con al menos 30 ms entre escrituras: en el ESP32,
- * ledc_update_duty() espera hasta el siguiente periodo de 20 ms si el duty
- * anterior aún no se aplicó.
+ * Salida: relé cerrado mientras velocidad > 0. El relé solo da encendido y
+ * apagado, así que la marcha se ve en las RPM y en la LCD, no en la llanta
+ * (limitación conocida; con un driver L298N/L9110S y PWM se vuelve
+ * proporcional). En APAGADO el relé se abre de inmediato.
  *
  * Escribe: velocidad.
  */

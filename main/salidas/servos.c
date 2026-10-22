@@ -1,81 +1,56 @@
 #include "servos.h"
 
 #include "config.h"
-#include "driver/ledc.h"
+#include "driver/gpio.h"
 #include "esp_check.h"
+#include "esp_log.h"
 #include "pines.h"
 
-static const char *TAG = "servos";
+static const char *TAG = "motor";
 
-#define SERVO_MODO   LEDC_LOW_SPEED_MODE
-#define SERVO_TIMER  LEDC_TIMER_0
-#define CANAL_IZQ    LEDC_CHANNEL_0
-#define CANAL_DER    LEDC_CHANNEL_1
+/* [AVANCE] En lugar de dos servos por LEDC, un relé enciende el motor DC.
+ * El cálculo de la velocidad (rampa de subida y frenado) es el mismo de la
+ * versión con servos: km_rpm y fsm_ecu siguen leyendo e->velocidad. Lo único
+ * que cambia es la etapa final: antes velocidad -> ancho de pulso; ahora
+ * velocidad > 0 -> relé cerrado. */
 
-/* Último duty escrito en cada canal y ciclo en que se escribió.
- * servos_iniciar() deja ambos canales en duty 0 (ciclo 0). */
-static uint32_t s_duty_izq;
-static uint32_t s_duty_der;
-static uint32_t s_ciclo_escritura;
+static bool s_motor_encendido;
+static uint32_t s_ciclo_conmutacion;
 
-static uint32_t us_a_duty(uint32_t us)
+static void rele_escribir(bool encender)
 {
-    return us * (1u << SERVO_BITS) / SERVO_PERIODO_US;
-}
-
-/* En el ESP32, ledc_update_duty() espera activamente (dentro de una sección
- * crítica) a que el hardware aplique el duty anterior, y eso ocurre hasta el
- * inicio del siguiente periodo del PWM: hasta 20 ms a 50 Hz por canal.
- * Escribir los dos canales en cada ciclo de 10 ms costaba ~40 ms por ciclo.
- * Por eso solo se escribe cuando el pulso cambia y han pasado al menos
- * SERVO_CICLOS_ENTRE_ESCRITURAS ciclos (30 ms): para entonces ya pasó un
- * periodo completo y la llamada no espera. */
-static void escribir_pulsos(const EstadoECU *e, uint32_t us_izq, uint32_t us_der)
-{
-    const uint32_t duty_izq = us_a_duty(us_izq);
-    const uint32_t duty_der = us_a_duty(us_der);
-    if (duty_izq == s_duty_izq && duty_der == s_duty_der) {
-        return;
-    }
-    if (e->ciclos - s_ciclo_escritura < SERVO_CICLOS_ENTRE_ESCRITURAS) {
-        return;     /* se escribe en un ciclo siguiente, con el valor de ese momento */
-    }
-    ledc_set_duty(SERVO_MODO, CANAL_IZQ, duty_izq);
-    ledc_update_duty(SERVO_MODO, CANAL_IZQ);
-    ledc_set_duty(SERVO_MODO, CANAL_DER, duty_der);
-    ledc_update_duty(SERVO_MODO, CANAL_DER);
-    s_duty_izq = duty_izq;
-    s_duty_der = duty_der;
-    s_ciclo_escritura = e->ciclos;
+#if RELE_ACTIVO_EN_BAJO
+    /* Salida de drenador abierto: 0 = jala a GND (relé activo),
+     * 1 = alta impedancia (relé suelto). Así los 3.3 V del ESP32 no dejan el
+     * módulo de 5 V a medio activar. */
+    gpio_set_level(PIN_RELE_MOTOR, encender ? 0 : 1);
+#else
+    gpio_set_level(PIN_RELE_MOTOR, encender ? 1 : 0);
+#endif
 }
 
 esp_err_t servos_iniciar(void)
 {
-    const ledc_timer_config_t timer = {
-        .speed_mode = SERVO_MODO,
-        .duty_resolution = (ledc_timer_bit_t)SERVO_BITS,
-        .timer_num = SERVO_TIMER,
-        .freq_hz = SERVO_FREQ_HZ,
-        .clk_cfg = LEDC_AUTO_CLK,
+    /* Primero el nivel de "apagado" y después se habilita la salida, para
+     * que el relé no dé un clic al arrancar. */
+    rele_escribir(false);
+    const gpio_config_t cfg = {
+        .pin_bit_mask = 1ULL << PIN_RELE_MOTOR,
+#if RELE_ACTIVO_EN_BAJO
+        .mode = GPIO_MODE_OUTPUT_OD,
+#else
+        .mode = GPIO_MODE_OUTPUT,
+#endif
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
     };
-    ESP_RETURN_ON_ERROR(ledc_timer_config(&timer), TAG, "timer LEDC");
-
-    const gpio_num_t pines[2] = { PIN_SERVO_IZQ, PIN_SERVO_DER };
-    const ledc_channel_t canales[2] = { CANAL_IZQ, CANAL_DER };
-    for (int i = 0; i < 2; i++) {
-        const ledc_channel_config_t canal = {
-            .gpio_num = pines[i],
-            .speed_mode = SERVO_MODO,
-            .channel = canales[i],
-            .timer_sel = SERVO_TIMER,
-            .duty = 0,          /* sin pulsos hasta el primer ciclo */
-            .hpoint = 0,
-        };
-        ESP_RETURN_ON_ERROR(ledc_channel_config(&canal), TAG, "canal %d", i);
-    }
-    s_duty_izq = 0;
-    s_duty_der = 0;
-    s_ciclo_escritura = 0;
+    ESP_RETURN_ON_ERROR(gpio_config(&cfg), TAG, "gpio del relé");
+    rele_escribir(false);
+    s_motor_encendido = false;
+    s_ciclo_conmutacion = 0;
+    ESP_LOGI(TAG, "relé del motor en GPIO %d (activo en %s)", PIN_RELE_MOTOR,
+             RELE_ACTIVO_EN_BAJO ? "bajo" : "alto");
     return ESP_OK;
 }
 
@@ -88,10 +63,10 @@ static int16_t velocidad_objetivo(const EstadoECU *e)
     case ESTADO_MODO_PRUEBAS:
         if (e->rutina == RUTINA_SERVOS) {
             /* Recorre las marchas 1..4, 2 s en cada una */
-            const uint32_t marcha = 1 + (e->ciclos_en_estado / PRUEBA_SERVOS_CICLOS) % MARCHA_MAX;
+            const uint32_t marcha = 1 + (e->ciclos_en_estado / PRUEBA_MOTOR_CICLOS) % MARCHA_MAX;
             return (int16_t)(marcha * VEL_POR_MARCHA);
         }
-        return 0;           /* servos inhibidos en las demás rutinas */
+        return 0;           /* motor inhibido en las demás rutinas */
     default:
         return 0;
     }
@@ -111,16 +86,32 @@ static int16_t paso_bajada(const EstadoECU *e)
         }
     }
     if (e->estado == ESTADO_MODO_PRUEBAS) {
-        return VEL_MAX;     /* al cambiar de rutina se detienen de inmediato */
+        return VEL_MAX;     /* al cambiar de rutina se detiene de inmediato */
     }
     return DESACEL_MOTOR_POR_CICLO;
+}
+
+static void actualizar_rele(const EstadoECU *e, bool encender)
+{
+    if (encender == s_motor_encendido) {
+        return;
+    }
+    /* Apagar es inmediato (seguridad). Encender respeta un tiempo mínimo desde
+     * la última conmutación para que el relé no "tartamudee". */
+    if (encender && e->ciclos - s_ciclo_conmutacion < RELE_CICLOS_MIN) {
+        return;
+    }
+    rele_escribir(encender);
+    s_motor_encendido = encender;
+    s_ciclo_conmutacion = e->ciclos;
+    ESP_LOGI(TAG, "motor %s", encender ? "ENCENDIDO" : "APAGADO");
 }
 
 void servos_actualizar(EstadoECU *e)
 {
     if (e->estado == ESTADO_APAGADO) {
         e->velocidad = 0;
-        escribir_pulsos(e, 0, 0);   /* sin pulsos: detenidos aunque el neutro no esté calibrado */
+        actualizar_rele(e, false);
         return;
     }
 
@@ -137,7 +128,5 @@ void servos_actualizar(EstadoECU *e)
         }
     }
 
-    const int32_t delta_us = (int32_t)e->velocidad * SERVO_RANGO_US / VEL_MAX;
-    escribir_pulsos(e, (uint32_t)(SERVO_NEUTRO_IZQ_US + delta_us),
-                    (uint32_t)(SERVO_NEUTRO_DER_US - delta_us));
+    actualizar_rele(e, e->velocidad > 0);
 }

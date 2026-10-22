@@ -4,176 +4,374 @@
 #include <string.h>
 
 #include "config.h"
-#include "driver/spi_master.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "pines.h"
+
+#if LCD_I2C
+#include "bus_i2c.h"
+#include "driver/i2c_master.h"
+#else
+#include "driver/gpio.h"
+#endif
 
 static const char *TAG = "display";
 
-/* Registros del MAX7219 */
-#define REG_DIGITO_0    0x01    /* 0x01..0x08 */
-#define REG_DECODE      0x09
-#define REG_INTENSIDAD  0x0A
-#define REG_SCAN_LIMIT  0x0B
-#define REG_SHUTDOWN    0x0C
-#define REG_TEST        0x0F
+#define COLS    16
+#define FILAS   2
 
-#define SEG_PUNTO       0x80
+/* Comandos del controlador HD44780 */
+#define CMD_BORRAR          0x01
+#define CMD_MODO_ENTRADA    0x06    /* el cursor avanza a la derecha */
+#define CMD_DISPLAY_ON      0x0C    /* pantalla encendida, sin cursor */
+#define CMD_FUNCION_4BITS   0x28    /* bus de 4 bits, 2 renglones, 5x8 */
+#define CMD_DDRAM           0x80    /* | dirección: renglón 0 = 0x00, renglón 1 = 0x40 */
 
-static spi_device_handle_t s_spi;
+#define CAR_BLOQUE          ((char)0xFF)    /* cuadro lleno en la ROM de caracteres */
+
 static bool s_habilitado;
+static bool s_compuesto;
+static char s_pantalla[FILAS][COLS];    /* lo que ya está escrito en la LCD; 0 = desconocido */
+static uint16_t s_pausa;                /* ciclos que faltan para reintentar tras un error */
+static bool s_en_error;
+static int s_paso = -1;                 /* paso de re-sincronización en curso; -1 = ninguno */
 
-/* Una palabra de 16 bits: dirección del registro y dato */
-static esp_err_t max_escribir(uint8_t reg, uint8_t dato)
+/* ============================ Capa física ============================
+ * Las dos versiones ofrecen lo mismo: poner_nibble() y enviar().
+ * Con I2C los nibbles se acumulan en un búfer y se mandan en UNA
+ * transferencia; en paralelo se escriben al momento en los GPIO. */
+#if LCD_I2C
+/* Módulo PCF8574 típico: P0 = RS, P1 = RW, P2 = E, P3 = luz, P4..P7 = D4..D7 */
+#define BIT_RS      0x01
+#define BIT_E       0x04
+#define BIT_LUZ     0x08
+
+static i2c_master_dev_handle_t s_lcd;
+static uint8_t s_buf[4 * (1 + LCD_CARACTERES_POR_CICLO)];  /* 4 bytes de I2C por byte de LCD */
+static size_t s_n;
+static uint8_t s_luz = BIT_LUZ;
+
+/* Cada nibble son dos escrituras al PCF8574: con E en 1 y con E en 0 (la LCD
+ * lee en el flanco de bajada). A 100 kHz cada byte de I2C dura ~90 µs, más
+ * que los 37 µs que necesita la LCD entre comandos. */
+static void poner_nibble(uint8_t nib, bool rs)
 {
-    spi_transaction_t t = {
-        .length = 16,
-        .flags = SPI_TRANS_USE_TXDATA,
-        .tx_data = { reg, dato },
-    };
-    return spi_device_polling_transmit(s_spi, &t);
+    const uint8_t v = (uint8_t)(nib << 4) | (rs ? BIT_RS : 0) | s_luz;
+    if (s_n + 2 <= sizeof(s_buf)) {
+        s_buf[s_n++] = v | BIT_E;
+        s_buf[s_n++] = v;
+    }
 }
 
-static void configurar_max(void)
+static esp_err_t enviar(void)
 {
-    max_escribir(REG_TEST, 0);
-    max_escribir(REG_DECODE, 0);            /* segmentos directos, sin BCD */
-    max_escribir(REG_SCAN_LIMIT, 7);        /* 8 dígitos */
-    max_escribir(REG_INTENSIDAD, MAX7219_BRILLO);
-    max_escribir(REG_SHUTDOWN, 1);          /* operación normal */
+    if (s_n == 0) {
+        return ESP_OK;
+    }
+    const esp_err_t err = i2c_master_transmit(s_lcd, s_buf, s_n, LCD_ESPERA_MS);
+    s_n = 0;
+    return err;
+}
+
+static esp_err_t buscar_lcd(i2c_master_bus_handle_t bus, uint16_t *dir)
+{
+    const uint16_t primero[2] = { LCD_DIRECCION, LCD_DIRECCION_A };
+    for (int i = 0; i < 2; i++) {
+        if (i2c_master_probe(bus, primero[i], 20) == ESP_OK) {
+            *dir = primero[i];
+            return ESP_OK;
+        }
+    }
+    /* Otras direcciones posibles del PCF8574 / PCF8574A, sin las del teclado */
+    for (uint16_t a = 0x20; a <= 0x3F; a++) {
+        if ((a > 0x27 && a < 0x38) || a == PCF8574_DIRECCION || a == PCF8574A_DIRECCION) {
+            continue;
+        }
+        if (i2c_master_probe(bus, a, 20) == ESP_OK) {
+            *dir = a;
+            return ESP_OK;
+        }
+    }
+    return ESP_ERR_NOT_FOUND;
+}
+
+static esp_err_t iniciar_fisico(void)
+{
+    i2c_master_bus_handle_t bus;
+    ESP_RETURN_ON_ERROR(bus_i2c_obtener(&bus), TAG, "bus I2C");
+
+    uint16_t dir = 0;
+    if (buscar_lcd(bus, &dir) != ESP_OK) {
+        ESP_LOGE(TAG, "la LCD no responde en el bus I2C (SDA %d, SCL %d)", PIN_I2C_SDA, PIN_I2C_SCL);
+        return ESP_ERR_NOT_FOUND;
+    }
+    const i2c_device_config_t dev = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = dir,
+        .scl_speed_hz = LCD_I2C_HZ,
+    };
+    ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(bus, &dev, &s_lcd), TAG, "dispositivo LCD");
+    ESP_LOGI(TAG, "LCD I2C en 0x%02X", dir);
+    return ESP_OK;
+}
+
+#else  /* LCD en paralelo, 4 bits */
+
+static const gpio_num_t PINES_D[4] = { PIN_LCD_D4, PIN_LCD_D5, PIN_LCD_D6, PIN_LCD_D7 };
+
+static void poner_nibble(uint8_t nib, bool rs)
+{
+    gpio_set_level(PIN_LCD_RS, rs);
+    for (int i = 0; i < 4; i++) {
+        gpio_set_level(PINES_D[i], (nib >> i) & 1u);
+    }
+    gpio_set_level(PIN_LCD_E, 1);
+    esp_rom_delay_us(1);                /* pulso de E de al menos 450 ns */
+    gpio_set_level(PIN_LCD_E, 0);
+    esp_rom_delay_us(1);
+}
+
+static esp_err_t enviar(void)
+{
+    return ESP_OK;                      /* ya se escribió en poner_nibble() */
+}
+
+static esp_err_t iniciar_fisico(void)
+{
+    uint64_t mascara = (1ULL << PIN_LCD_RS) | (1ULL << PIN_LCD_E);
+    for (int i = 0; i < 4; i++) {
+        mascara |= 1ULL << PINES_D[i];
+    }
+    const gpio_config_t cfg = {
+        .pin_bit_mask = mascara,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ESP_RETURN_ON_ERROR(gpio_config(&cfg), TAG, "gpio de la LCD");
+    gpio_set_level(PIN_LCD_E, 0);
+    ESP_LOGI(TAG, "LCD en paralelo (RS %d, E %d, D4..D7 %d %d %d %d)", PIN_LCD_RS, PIN_LCD_E,
+             PIN_LCD_D4, PIN_LCD_D5, PIN_LCD_D6, PIN_LCD_D7);
+    return ESP_OK;
+}
+#endif
+
+static void poner_byte(uint8_t b, bool rs)
+{
+    poner_nibble(b >> 4, rs);
+    poner_nibble(b & 0x0F, rs);
+#if !LCD_I2C
+    esp_rom_delay_us(50);               /* la LCD tarda 37 µs en ejecutar cada byte */
+#endif
+}
+
+/* ======================= Inicialización del HD44780 =======================
+ * Secuencia del datasheet para pasar a 4 bits desde CUALQUIER estado: tres
+ * veces 0x3 y luego 0x2. Como funciona aunque la LCD esté desfasada, se
+ * repite cada 2 s (un paso por ciclo) para que el ruido del motor y del relé
+ * no deje basura en pantalla. No borra la memoria de la LCD. */
+typedef struct {
+    uint8_t valor;
+    bool nibble;                        /* true = solo medio byte (inicio) */
+} paso_t;
+
+static const paso_t SECUENCIA[] = {
+    { 0x3, true }, { 0x3, true }, { 0x3, true }, { 0x2, true },
+    { CMD_FUNCION_4BITS, false }, { CMD_DISPLAY_ON, false }, { CMD_MODO_ENTRADA, false },
+};
+#define NUM_PASOS   ((int)(sizeof(SECUENCIA) / sizeof(SECUENCIA[0])))
+
+static esp_err_t enviar_paso(int i)
+{
+    if (SECUENCIA[i].nibble) {
+        poner_nibble(SECUENCIA[i].valor, false);
+    } else {
+        poner_byte(SECUENCIA[i].valor, false);
+    }
+    return enviar();
 }
 
 esp_err_t display_iniciar(void)
 {
-    const spi_bus_config_t bus = {
-        .mosi_io_num = PIN_MAX_DIN,
-        .miso_io_num = -1,
-        .sclk_io_num = PIN_MAX_CLK,
-        .quadwp_io_num = -1,
-        .quadhd_io_num = -1,
-        .max_transfer_sz = 2,
-    };
-    ESP_RETURN_ON_ERROR(spi_bus_initialize(SPI3_HOST, &bus, SPI_DMA_DISABLED), TAG, "bus SPI3");
+    ESP_RETURN_ON_ERROR(iniciar_fisico(), TAG, "LCD");
 
-    const spi_device_interface_config_t dev = {
-        .clock_speed_hz = MAX7219_SPI_HZ,
-        .mode = 0,                  /* el MAX7219 captura el dato en el flanco de subida */
-        .spics_io_num = PIN_MAX_CS, /* al subir CS el dato se carga al registro */
-        .queue_size = 1,
-    };
-    ESP_RETURN_ON_ERROR(spi_bus_add_device(SPI3_HOST, &dev, &s_spi), TAG, "MAX7219");
-
-    s_habilitado = true;
-    configurar_max();
-    for (int i = 0; i < 8; i++) {
-        max_escribir(REG_DIGITO_0 + i, 0);
+    /* Antes del ciclo de 10 ms sí se puede esperar */
+    vTaskDelay(pdMS_TO_TICKS(50));      /* > 40 ms desde que la LCD recibe 5 V */
+    for (int i = 0; i < NUM_PASOS; i++) {
+        ESP_RETURN_ON_ERROR(enviar_paso(i), TAG, "inicialización");
+        vTaskDelay(pdMS_TO_TICKS(5));   /* > 4.1 ms */
     }
+    poner_byte(CMD_BORRAR, false);
+    ESP_RETURN_ON_ERROR(enviar(), TAG, "borrar");
+    vTaskDelay(pdMS_TO_TICKS(5));       /* borrar tarda 1.52 ms */
+
+    memset(s_pantalla, ' ', sizeof(s_pantalla));
+    s_habilitado = true;
     return ESP_OK;
 }
 
-/* Bits del MAX7219 sin decodificar: DP A B C D E F G (bit 7..0) */
-static uint8_t segmentos(char c)
-{
-    switch (c) {
-    case '0': return 0x7E;
-    case '1': return 0x30;
-    case '2': return 0x6D;
-    case '3': return 0x79;
-    case '4': return 0x33;
-    case '5': case 'S': return 0x5B;
-    case '6': return 0x5F;
-    case '7': return 0x70;
-    case '8': return 0x7F;
-    case '9': return 0x7B;
-    case 'A': return 0x77;
-    case 'b': return 0x1F;
-    case 'E': return 0x4F;
-    case 'I': return 0x30;
-    case 'n': return 0x15;
-    case 'P': return 0x67;
-    case 'r': return 0x05;
-    case 'u': return 0x1C;
-    case '-': return 0x01;
-    default:  return 0x00;  /* espacio */
-    }
-}
+/* ============================ Contenido ============================ */
 
-/* Convierte texto a 8 dígitos; un '.' enciende el punto del dígito anterior. */
-static void texto_a_digitos(const char *txt, uint8_t dig[8])
-{
-    memset(dig, 0, 8);
-    int pos = 0;
-    for (const char *p = txt; *p != '\0'; p++) {
-        if (*p == '.') {
-            if (pos > 0) {
-                dig[pos - 1] |= SEG_PUNTO;
-            }
-        } else if (pos < 8) {
-            dig[pos++] = segmentos(*p);
-        }
-    }
-}
-
-static void componer_texto(const EstadoECU *e, char *txt, size_t n)
+static const char *nombre_corto(const EstadoECU *e)
 {
     switch (e->estado) {
+    case ESTADO_APAGADO:         return "APAGADO";
+    case ESTADO_BLOQUEADO:       return "BLOQUEADO";
+    case ESTADO_NEUTRAL:         return "NEUTRAL";
+    case ESTADO_ARRANQUE:        return "ARRANQUE";
+    case ESTADO_EN_MARCHA:       return "EN MARCHA";
+    case ESTADO_FRENADO:         return (e->freno_del && e->freno_tra) ? "FRENO ABS" : "FRENADO";
+    case ESTADO_MODO_PRUEBAS:    return "MODO PRUEBAS";
+    case ESTADO_SIN_COMBUSTIBLE: return "SIN GASOLINA";
+    default:                     return "?";
+    }
+}
+
+/* Copia el texto a un renglón y rellena con espacios hasta 16 columnas */
+static void renglon(char destino[COLS], const char *txt)
+{
+    size_t n = strlen(txt);
+    if (n > COLS) {
+        n = COLS;
+    }
+    memcpy(destino, txt, n);
+    memset(destino + n, ' ', COLS - n);
+}
+
+/*   ARRANQUE, EN_MARCHA, FRENADO     "EN MARCHA    M3" / "5000rpm   12.3km"
+ *   NEUTRAL, SIN_COMBUSTIBLE         "NEUTRAL      M1" / "SERV     12.3km"
+ *   BLOQUEADO                        "BLOQUEADO"       / "Clave: **"
+ *   MODO_PRUEBAS                     "MODO PRUEBAS"    / "Rutina n"; rutina 2 = todo encendido
+ *   APAGADO                          en blanco y sin luz de fondo */
+static void componer(const EstadoECU *e, char lcd[FILAS][COLS])
+{
+    char l1[40] = "";
+    char l2[40] = "";
+    const unsigned long decimas = e->km_m / 100u;
+    const unsigned long km = decimas / 10u;
+
+    switch (e->estado) {
     case ESTADO_APAGADO:
-        txt[0] = '\0';
         break;
 
     case ESTADO_ARRANQUE:
     case ESTADO_EN_MARCHA:
     case ESTADO_FRENADO:
-        snprintf(txt, n, "%4u   %u", e->rpm, e->marcha);
+        snprintf(l1, sizeof(l1), "%-12s M%u", nombre_corto(e), e->marcha);
+        snprintf(l2, sizeof(l2), "%4urpm %4lu.%lukm", e->rpm, km % 10000u, decimas % 10u);
         break;
 
     case ESTADO_BLOQUEADO:
-        snprintf(txt, n, "PIn %.*s", e->clave_digitos, "----");
+        snprintf(l1, sizeof(l1), "%s", nombre_corto(e));
+        snprintf(l2, sizeof(l2), "Clave: %.*s", e->clave_digitos, "****");
         break;
 
     case ESTADO_MODO_PRUEBAS:
         if (e->rutina == RUTINA_DISPLAY) {
-            snprintf(txt, n, "8.8.8.8.8.8.8.8.");
-        } else if (e->rutina == RUTINA_MENU) {
-            snprintf(txt, n, "PruEbA -");
+            memset(lcd, CAR_BLOQUE, FILAS * COLS);  /* prueba de todos los puntos */
+            return;
+        }
+        snprintf(l1, sizeof(l1), "%s", nombre_corto(e));
+        if (e->rutina == RUTINA_MENU) {
+            snprintf(l2, sizeof(l2), "Elija rutina 1-4");
         } else {
-            snprintf(txt, n, "PruEbA %u", e->rutina);
+            snprintf(l2, sizeof(l2), "Rutina %u", e->rutina);
         }
         break;
 
-    default: {  /* NEUTRAL y SIN_COMBUSTIBLE: kilómetros con una décima */
-        const unsigned long decimas = e->km_m / 100u;
-        snprintf(txt, n, "%c%6lu.%lu", e->flag_servicio ? 'S' : ' ',
-                 decimas / 10u, decimas % 10u);
+    default:    /* NEUTRAL y SIN_COMBUSTIBLE: kilómetros con una décima */
+        snprintf(l1, sizeof(l1), "%-12s M%u", nombre_corto(e), e->marcha);
+        snprintf(l2, sizeof(l2), "%-4s %6lu.%lukm", e->flag_servicio ? "SERV" : "", km % 1000000u, decimas % 10u);
         break;
     }
+    renglon(lcd[0], l1);
+    renglon(lcd[1], l2);
+}
+
+/* Escribe a lo más LCD_CARACTERES_POR_CICLO caracteres a partir del primero
+ * que sea distinto de lo que ya está en pantalla. Así una pantalla completa
+ * se reparte en varios ciclos (~60 ms) y ningún ciclo pasa de ~3 ms. */
+static esp_err_t escribir_cambios(const EstadoECU *e)
+{
+    for (int f = 0; f < FILAS; f++) {
+        for (int c = 0; c < COLS; c++) {
+            if (e->lcd[f][c] == s_pantalla[f][c]) {
+                continue;
+            }
+            int fin = c + LCD_CARACTERES_POR_CICLO;
+            if (fin > COLS) {
+                fin = COLS;
+            }
+            poner_byte(CMD_DDRAM | (f ? 0x40 : 0x00) | (uint8_t)c, false);
+            for (int k = c; k < fin; k++) {
+                poner_byte((uint8_t)e->lcd[f][k], true);
+            }
+            const esp_err_t err = enviar();
+            if (err == ESP_OK) {
+                memcpy(&s_pantalla[f][c], &e->lcd[f][c], (size_t)(fin - c));
+            }
+            return err;
+        }
     }
+    return ESP_OK;
+}
+
+static void manejar_error(esp_err_t err)
+{
+    if (err == ESP_OK) {
+        if (s_en_error) {
+            ESP_LOGI(TAG, "la LCD responde de nuevo");
+            s_en_error = false;
+        }
+        return;
+    }
+    if (!s_en_error) {
+        ESP_LOGW(TAG, "la LCD no responde (%s); reintento cada %d ms",
+                 esp_err_to_name(err), LCD_PAUSA_CICLOS * CICLO_MS);
+        s_en_error = true;
+    }
+    s_pausa = LCD_PAUSA_CICLOS;
+    s_paso = 0;                         /* al volver se re-sincroniza y se redibuja */
 }
 
 void display_actualizar(EstadoECU *e)
 {
-    if (!s_habilitado || !e->tick_100ms) {
+    if (!s_habilitado) {
         return;
     }
 
-    /* Cada 2 s se reconfigura el chip: si el ruido de los servos alteró un
-     * registro de control, el display se recupera solo. */
-    const bool reconfigurar = (e->ciclos % DISPLAY_REINICIO_CICLOS) == 0;
-    if (reconfigurar) {
-        configurar_max();
+    /* El texto se recalcula cada 100 ms (y en el primer ciclo) */
+    if (e->tick_100ms || !s_compuesto) {
+        componer(e, e->lcd);
+        s_compuesto = true;
+#if LCD_I2C
+        s_luz = (e->estado == ESTADO_APAGADO) ? 0 : BIT_LUZ;
+#endif
     }
 
-    char txt[32];
-    uint8_t nuevos[8];
-    componer_texto(e, txt, sizeof(txt));
-    texto_a_digitos(txt, nuevos);
+    if (s_pausa > 0) {
+        s_pausa--;
+        return;
+    }
 
-    if (reconfigurar || memcmp(nuevos, e->digitos, sizeof(nuevos)) != 0) {
-        /* DIGIT0 es el dígito de la derecha en los módulos comunes */
-        for (int pos = 0; pos < 8; pos++) {
-            max_escribir(REG_DIGITO_0 + (7 - pos), nuevos[pos]);
+    if (s_paso < 0 && (e->ciclos % LCD_REINICIO_CICLOS) == 0) {
+        s_paso = 0;
+    }
+
+    esp_err_t err;
+    if (s_paso >= 0) {
+        /* Un paso de re-sincronización por ciclo (10 ms > 4.1 ms que pide la LCD) */
+        err = enviar_paso(s_paso);
+        if (err == ESP_OK && ++s_paso >= NUM_PASOS) {
+            s_paso = -1;
+            memset(s_pantalla, 0, sizeof(s_pantalla));     /* fuerza a redibujar todo */
         }
-        memcpy(e->digitos, nuevos, sizeof(nuevos));
+    } else {
+        err = escribir_cambios(e);
     }
+    manejar_error(err);
 }
