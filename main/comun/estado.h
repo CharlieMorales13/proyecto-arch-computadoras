@@ -88,14 +88,14 @@ typedef struct {
     uint32_t km_m;              /* kilometraje en metros */
     bool flag_servicio;
 
-    /* ---------- servos.c ---------- */
+    /* ---------- servos.c (en el avance: motor DC por relé) ---------- */
     int16_t velocidad;          /* 0..10000 = 0..100.00 % de la velocidad máxima */
 
     /* ---------- salidas_leds.c ---------- */
-    uint16_t bits_leds;         /* imagen de las 16 salidas de los 74HC595 */
+    uint16_t bits_leds;         /* imagen de las salidas de LEDs (bit i = LED i) */
 
     /* ---------- display.c ---------- */
-    uint8_t digitos[8];         /* segmentos enviados al MAX7219, [0] = izquierda */
+    char lcd[2][16];            /* texto que debe verse en la LCD 16x2 (renglón, columna) */
 } EstadoECU;
 
 const char *estado_nombre(estado_ecu_t e);

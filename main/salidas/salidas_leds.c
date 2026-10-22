@@ -14,33 +14,36 @@ static const char *TAG = "salidas_leds";
 
 static uint16_t s_bits_enviados;
 
-/* Envía 16 bits a los 74HC595: el bit 15 entra primero y termina en el
- * último chip; luego un pulso en LATCH copia todo a las salidas a la vez. */
-static void escribir_595(uint16_t bits)
+/* [AVANCE] Sin 74HC595: cada bit de bits_leds va a su propio GPIO.
+ * El orden del arreglo es el de los bits (LED_GAS_1 = bit 0 ... LED_RGB_B = bit 6).
+ * Las direccionales (bits 7 y 8) se siguen calculando pero no tienen LED. */
+static const gpio_num_t PINES[LED_SALIDAS_USADAS] = {
+    PIN_LED_GAS_1, PIN_LED_GAS_2, PIN_LED_GAS_3, PIN_LED_GAS_4,
+    PIN_LED_ESTADO_R, PIN_LED_ESTADO_G, PIN_LED_ESTADO_B,
+};
+
+static void escribir_leds(uint16_t bits)
 {
-    for (int i = 15; i >= 0; i--) {
-        gpio_set_level(PIN_595_DATA, (bits >> i) & 1u);
-        gpio_set_level(PIN_595_CLK, 1);
-        gpio_set_level(PIN_595_CLK, 0);
+    for (int i = 0; i < LED_SALIDAS_USADAS; i++) {
+        gpio_set_level(PINES[i], (bits >> i) & 1u);
     }
-    gpio_set_level(PIN_595_LATCH, 1);
-    gpio_set_level(PIN_595_LATCH, 0);
 }
 
 esp_err_t salidas_leds_iniciar(void)
 {
+    uint64_t mascara = 1ULL << PIN_LED_VIDA;
+    for (int i = 0; i < LED_SALIDAS_USADAS; i++) {
+        mascara |= 1ULL << PINES[i];
+    }
     const gpio_config_t cfg = {
-        .pin_bit_mask = (1ULL << PIN_595_DATA) | (1ULL << PIN_595_CLK) |
-                        (1ULL << PIN_595_LATCH) | (1ULL << PIN_LED_VIDA),
+        .pin_bit_mask = mascara,
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
     ESP_RETURN_ON_ERROR(gpio_config(&cfg), TAG, "gpio");
-    gpio_set_level(PIN_595_CLK, 0);
-    gpio_set_level(PIN_595_LATCH, 0);
-    escribir_595(0);
+    escribir_leds(0);
     s_bits_enviados = 0;
     return ESP_OK;
 }
@@ -97,7 +100,7 @@ void salidas_leds_actualizar(EstadoECU *e)
 
     uint16_t bits = 0;
     if (e->estado == ESTADO_MODO_PRUEBAS && e->rutina == RUTINA_LEDS) {
-        /* Rutina 1: barrido de las 9 salidas, 200 ms cada una */
+        /* Rutina 1: barrido de las salidas con LED, 200 ms cada una */
         bits = (uint16_t)(1u << ((e->ciclos_en_estado / 20u) % LED_SALIDAS_USADAS));
     } else if (e->estado != ESTADO_APAGADO) {
         bits = barra_gasolina(e) | direccionales(e) | color_rgb(e);
@@ -105,7 +108,7 @@ void salidas_leds_actualizar(EstadoECU *e)
 
     e->bits_leds = bits;
     if (bits != s_bits_enviados) {
-        escribir_595(bits);
+        escribir_leds(bits);
         s_bits_enviados = bits;
     }
 }

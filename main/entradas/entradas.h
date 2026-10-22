@@ -1,12 +1,18 @@
 /*
- * entradas.h — Lectura de los 10 controles y del potenciómetro
+ * entradas.h — Lectura de los controles y de los ADC
  * (equivale a debounce_universal en VHDL).
  *
- * - Todas las entradas son activas en bajo (0 V = presionado / encendido).
+ * [AVANCE] Conectados: ignición, arranque (botón del joystick), freno
+ * delantero (microinterruptor), freno trasero (TCRT5000), potenciómetro de
+ * gasolina y eje Y del joystick (cambio de marcha). Direccionales,
+ * intermitentes y reset maestro se reportan en falso.
+ *
+ * - Todas las entradas digitales son activas en bajo (0 V = presionado / encendido).
  * - Una entrada cambia solo tras 2 lecturas iguales seguidas (20 ms).
- * - Los botones de arranque, cambio y reset generan un evento que dura un
- *   solo ciclo (flanco de presión).
- * - El ADC se promedia y se convierte a nivel de gasolina 0..4 con histéresis.
+ * - Arranque y cambio generan un evento que dura un solo ciclo.
+ * - El joystick da UN cambio por cada vez que se lleva a un extremo; hay que
+ *   regresarlo al centro para el siguiente.
+ * - El ADC de gasolina se promedia y se convierte a nivel 0..4 con histéresis.
  *
  * Escribe: ign_on, sentido_cambio, dir_izq, dir_der, intermitentes,
  *          freno_del, freno_tra, btn_arranque, btn_cambio, btn_reset,

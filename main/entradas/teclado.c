@@ -1,10 +1,10 @@
 #include "teclado.h"
 
+#include "bus_i2c.h"
 #include "config.h"
 #include "driver/i2c_master.h"
 #include "esp_check.h"
 #include "esp_log.h"
-#include "pines.h"
 
 static const char *TAG = "teclado";
 
@@ -38,15 +38,8 @@ static esp_err_t pcf_leer(uint8_t *v)
 
 esp_err_t teclado_iniciar(void)
 {
-    const i2c_master_bus_config_t bus_cfg = {
-        .i2c_port = -1,
-        .sda_io_num = PIN_I2C_SDA,
-        .scl_io_num = PIN_I2C_SCL,
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = 7,
-        .flags.enable_internal_pullup = true,
-    };
-    ESP_RETURN_ON_ERROR(i2c_new_master_bus(&bus_cfg, &s_bus), TAG, "bus I2C");
+    /* [AVANCE] El bus se comparte con la LCD I2C (ver bus_i2c.h) */
+    ESP_RETURN_ON_ERROR(bus_i2c_obtener(&s_bus), TAG, "bus I2C");
 
     uint16_t dir = 0;
     if (i2c_master_probe(s_bus, PCF8574_DIRECCION, 20) == ESP_OK) {

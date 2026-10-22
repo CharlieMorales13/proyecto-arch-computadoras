@@ -75,17 +75,13 @@
 #define FRENO_TRA_POR_CICLO     25      /* trasero: -25 %/s */
 #define FRENO_ABS_POR_CICLO     100     /* ambos (ABS): -100 %/s -> alto en 1 s o menos */
 
-/* ===================== Servos ===================== */
-#define SERVO_FREQ_HZ           50
-#define SERVO_BITS              14      /* 16384 cuentas en 20 ms */
-#define SERVO_PERIODO_US        20000
-#define SERVO_NEUTRO_IZQ_US     1500    /* calibrar con cada servo real */
-#define SERVO_NEUTRO_DER_US     1500
-#define SERVO_RANGO_US          400     /* ±400 µs en marcha 4 */
-#define PRUEBA_SERVOS_CICLOS    200     /* rutina 3: 2 s en cada marcha */
-/* Mínimo de ciclos entre escrituras al LEDC (30 ms > periodo de 20 ms): en el
- * ESP32 ledc_update_duty() espera a que se aplique el duty anterior. */
-#define SERVO_CICLOS_ENTRE_ESCRITURAS 3
+/* ===================== Motor (relé) ===================== */
+/* [AVANCE] El relé solo enciende o apaga: el motor gira mientras velocidad > 0.
+ * La velocidad se sigue calculando igual que con los servos (rampa y frenos). */
+#define RELE_ACTIVO_EN_BAJO     1       /* 1: módulo de relé que se activa con 0 V (el más común).
+                                         * 0: se activa con 3.3 V (o relé con transistor NPN). */
+#define RELE_CICLOS_MIN         20      /* mínimo 200 ms encendido antes de volver a conmutar */
+#define PRUEBA_MOTOR_CICLOS     200     /* rutina 3: 2 s en cada marcha */
 
 /* ===================== Kilometraje ===================== */
 #define METROS_POR_VUELTA       125     /* 8 vueltas simuladas = 1 km */
@@ -94,7 +90,33 @@
 #define RUEDA_RPS_MAX_X100      200
 #define SERVICIO_CADA_METROS    16000   /* aviso de servicio cada 16 km: 16, 32, 48... */
 
-/* ===================== Display ===================== */
-#define MAX7219_SPI_HZ          1000000 /* [NUEVO] limitado por el convertidor de nivel */
-#define MAX7219_BRILLO          4       /* 0..15 */
-#define DISPLAY_REINICIO_CICLOS 200     /* [NUEVO] reconfigura el MAX7219 cada 2 s */
+/* ===================== Ignición ===================== */
+/* [AVANCE] 1: botón de presionar (push) en GPIO 34; cada pulsación enciende o
+ *             apaga la ignición, como un botón de encendido.
+ *          0: interruptor o cable que se queda puesto (encendido mientras esté a GND). */
+#define IGNICION_CON_BOTON      1
+/* Tiempo mínimo entre dos cambios de la ignición. Evita que un botón con
+ * rebote largo o un sensor infrarrojo que "titila" en el borde de su alcance
+ * la enciendan y apaguen varias veces con una sola pulsación. */
+#define IGNICION_BLOQUEO_CICLOS 50      /* 500 ms */
+
+/* ===================== Joystick (cambio de marcha) ===================== */
+/* [AVANCE] Eje Y en el ADC (0..4095; en reposo queda cerca de 1900).
+ * Llevarlo a un extremo pide UN cambio de marcha; hay que regresarlo al
+ * centro para pedir el siguiente. Calibrar con el valor que imprime el monitor. */
+#define JOY_EXTREMO_ALTO        3300    /* por encima: extremo "alto" */
+#define JOY_EXTREMO_BAJO        800     /* por debajo: extremo "bajo" */
+#define JOY_CENTRO_MIN          1300    /* entre estos dos: centro (rearma el cambio) */
+#define JOY_CENTRO_MAX          2700
+#define JOY_ALTO_SUBE           1       /* 1: el extremo alto sube la marcha; 0 si en su joystick es al revés */
+
+/* ===================== LCD 16x2 ===================== */
+/* [AVANCE] Direcciones típicas del módulo I2C (PCF8574 = 0x27, PCF8574A = 0x3F).
+ * Si no responde en ninguna, se buscan las demás 0x20..0x27 y 0x38..0x3F. */
+#define LCD_DIRECCION           0x27
+#define LCD_DIRECCION_A         0x3F
+#define LCD_I2C_HZ              100000
+#define LCD_ESPERA_MS           10      /* tiempo máximo de cada transferencia I2C */
+#define LCD_CARACTERES_POR_CICLO 6      /* ~2.6 ms por ciclo a 100 kHz; la pantalla completa en ~60 ms */
+#define LCD_PAUSA_CICLOS        100     /* tras un error de I2C se reintenta en 1 s */
+#define LCD_REINICIO_CICLOS     200     /* re-sincroniza la LCD cada 2 s (por ruido del motor y el relé) */

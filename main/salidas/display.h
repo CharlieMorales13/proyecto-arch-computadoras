@@ -1,15 +1,24 @@
 /*
- * display.h — Display de 8 dígitos con MAX7219 por SPI (equivale a mux_7seg
- * en VHDL). El chip hace el multiplexado; el ESP32 solo envía los dígitos
- * cada 100 ms y únicamente si cambiaron.
+ * display.h — LCD 16x2 con controlador HD44780 (equivale a mux_7seg en VHDL).
  *
- *   ARRANQUE, EN_MARCHA, FRENADO -> RPM y marcha      "9000   4"
- *   NEUTRAL, SIN_COMBUSTIBLE     -> km y "S" si hay servicio  "S    12.3"
- *   BLOQUEADO                    -> un guion por dígito tecleado "PIn --"
- *   MODO_PRUEBAS                 -> "PruEbA n"; rutina 2 = "8.8.8.8.8.8.8.8."
- *   APAGADO                      -> apagado
+ * [AVANCE] Sustituye al MAX7219 de 8 dígitos. Funciona con la LCD de módulo
+ * I2C (PCF8574) o conectada en paralelo de 4 bits; se elige con LCD_I2C en
+ * pines.h.
  *
- * Escribe: digitos.
+ *   ARRANQUE, EN_MARCHA, FRENADO -> estado, marcha, RPM y km
+ *        "EN MARCHA    M3"
+ *        "5000rpm   12.3km"
+ *   NEUTRAL, SIN_COMBUSTIBLE     -> estado, marcha, km y "SERV" si hay servicio
+ *   BLOQUEADO                    -> un asterisco por dígito tecleado
+ *   MODO_PRUEBAS                 -> rutina elegida; rutina 2 = todos los puntos
+ *   APAGADO                      -> en blanco (con I2C también apaga la luz)
+ *
+ * El texto se recalcula cada 100 ms y en cada ciclo de 10 ms solo se envían
+ * hasta 6 caracteres que hayan cambiado, para no alargar el ciclo. Cada 2 s
+ * la LCD se re-sincroniza sin borrar la pantalla, por si el ruido del motor
+ * la desfasó. Si la LCD no responde, se avisa y se reintenta cada segundo.
+ *
+ * Escribe: lcd.
  */
 #pragma once
 
