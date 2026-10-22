@@ -50,6 +50,7 @@ static bool s_adc_listo;
 #if IGNICION_CON_BOTON
 /* Ignición con botón: estado encendido/apagado que cambia con cada pulsación */
 static bool s_ign_encendida;
+static uint16_t s_ign_bloqueo;      /* ciclos que faltan para aceptar otro cambio */
 #endif
 
 /* Joystick: zona de la lectura y si ya regresó al centro */
@@ -229,9 +230,14 @@ void entradas_actualizar(EstadoECU *e)
 
 #if IGNICION_CON_BOTON
     /* Cada pulsación (flanco con antirrebote) invierte la ignición, como un
-     * flip-flop T. Al arrancar la placa la ignición queda apagada. */
-    if (flanco(IN_IGNICION)) {
+     * flip-flop T. Al arrancar la placa la ignición queda apagada. Funciona
+     * con un botón, dos cables que se tocan o un sensor infrarrojo con
+     * salida digital (pasar la mano = pulsación). */
+    if (s_ign_bloqueo > 0) {
+        s_ign_bloqueo--;
+    } else if (flanco(IN_IGNICION)) {
         s_ign_encendida = !s_ign_encendida;
+        s_ign_bloqueo = IGNICION_BLOQUEO_CICLOS;
         ESP_LOGI(TAG, "botón de ignición: %s", s_ign_encendida ? "ENCENDIDA" : "APAGADA");
     }
     e->ign_on = s_ign_encendida;

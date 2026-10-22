@@ -95,6 +95,10 @@
  *             apaga la ignición, como un botón de encendido.
  *          0: interruptor o cable que se queda puesto (encendido mientras esté a GND). */
 #define IGNICION_CON_BOTON      1
+/* Tiempo mínimo entre dos cambios de la ignición. Evita que un botón con
+ * rebote largo o un sensor infrarrojo que "titila" en el borde de su alcance
+ * la enciendan y apaguen varias veces con una sola pulsación. */
+#define IGNICION_BLOQUEO_CICLOS 50      /* 500 ms */
 
 /* ===================== Joystick (cambio de marcha) ===================== */
 /* [AVANCE] Eje Y en el ADC (0..4095; en reposo queda cerca de 1900).
