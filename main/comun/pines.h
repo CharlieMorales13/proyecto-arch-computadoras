@@ -21,7 +21,7 @@
  * 1 = la LCD trae atrás un módulo I2C de 4 pines (GND, VCC, SDA, SCL)
  * 0 = la LCD se conecta con sus 16 pines (modo de 4 bits: RS, E, D4..D7)
  * Es lo ÚNICO que hay que cambiar según la LCD que tengan. */
-#define LCD_I2C               1
+#define LCD_I2C               0
 
 /* ===================== Entradas ===================== */
 /* Solo entrada, pull-up EXTERNA de 10 kΩ a 3.3 V. Botón de ignición a GND

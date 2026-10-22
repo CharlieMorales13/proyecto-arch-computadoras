@@ -18,8 +18,8 @@ Sin cambios: `main.c`, `fsm_ecu.c`, `fsm_diag.c`, `km_rpm.c`, `tiempos.c`, `pers
 
 ## Antes de grabar: dos opciones en el código
 
-1. **Tipo de LCD** (`main/comun/pines.h`): `#define LCD_I2C 1` si atrás trae un módulo de 4 pines
-   (GND, VCC, SDA, SCL); `0` si se conecta con sus 16 pines.
+1. **Tipo de LCD** (`main/comun/pines.h`): viene en `0` porque la LCD del equipo es de 16 pines. Cambiar a
+   `1` solo si se usa una LCD con módulo I2C de 4 pines (GND, VCC, SDA, SCL).
 2. **Tipo de relé** (`main/comun/config.h`): `#define RELE_ACTIVO_EN_BAJO 1` para el módulo de relé común
    (se activa con 0 V). Si el relé hace clic al revés, cambiar a `0`.
 
