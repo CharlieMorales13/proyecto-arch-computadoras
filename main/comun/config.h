@@ -90,6 +90,12 @@
 #define RUEDA_RPS_MAX_X100      200
 #define SERVICIO_CADA_METROS    16000   /* aviso de servicio cada 16 km: 16, 32, 48... */
 
+/* ===================== Ignición ===================== */
+/* [AVANCE] 1: botón de presionar (push) en GPIO 34; cada pulsación enciende o
+ *             apaga la ignición, como un botón de encendido.
+ *          0: interruptor o cable que se queda puesto (encendido mientras esté a GND). */
+#define IGNICION_CON_BOTON      1
+
 /* ===================== Joystick (cambio de marcha) ===================== */
 /* [AVANCE] Eje Y en el ADC (0..4095; en reposo queda cerca de 1900).
  * Llevarlo a un extremo pide UN cambio de marcha; hay que regresarlo al

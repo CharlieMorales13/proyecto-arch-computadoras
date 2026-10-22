@@ -26,7 +26,7 @@ typedef struct {
 } entrada_def_t;
 
 static const entrada_def_t DEF[IN_TOTAL] = {
-    [IN_IGNICION]  = { PIN_SW_IGNICION,   false },  /* 10 kΩ externa */
+    [IN_IGNICION]  = { PIN_SW_IGNICION,   false },  /* botón o cable a GND, 10 kΩ externa a 3.3 V */
     [IN_ARRANQUE]  = { PIN_BTN_ARRANQUE,  true  },
     [IN_FRENO_DEL] = { PIN_BTN_FRENO_DEL, true  },
     /* El TCRT5000 trae su pull-up; la interna solo se agrega si el pin la tiene */
@@ -46,6 +46,11 @@ static uint16_t s_muestras[ADC_PROMEDIO];
 static uint32_t s_suma;
 static uint8_t s_indice;
 static bool s_adc_listo;
+
+#if IGNICION_CON_BOTON
+/* Ignición con botón: estado encendido/apagado que cambia con cada pulsación */
+static bool s_ign_encendida;
+#endif
 
 /* Joystick: zona de la lectura y si ya regresó al centro */
 typedef enum { JOY_INTERMEDIO = 0, JOY_CENTRO, JOY_ALTO, JOY_BAJO } joy_zona_t;
@@ -222,7 +227,17 @@ void entradas_actualizar(EstadoECU *e)
 {
     leer_digitales();
 
-    e->ign_on    = s_estable[IN_IGNICION];
+#if IGNICION_CON_BOTON
+    /* Cada pulsación (flanco con antirrebote) invierte la ignición, como un
+     * flip-flop T. Al arrancar la placa la ignición queda apagada. */
+    if (flanco(IN_IGNICION)) {
+        s_ign_encendida = !s_ign_encendida;
+        ESP_LOGI(TAG, "botón de ignición: %s", s_ign_encendida ? "ENCENDIDA" : "APAGADA");
+    }
+    e->ign_on = s_ign_encendida;
+#else
+    e->ign_on = s_estable[IN_IGNICION];
+#endif
     e->freno_del = s_estable[IN_FRENO_DEL];
     e->freno_tra = s_estable[IN_FRENO_TRA];
 

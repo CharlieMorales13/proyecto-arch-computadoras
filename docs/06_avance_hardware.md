@@ -31,7 +31,7 @@ Todas las tierras unidas: ESP32, MB102, relé, LCD, joystick y sensores.
 
 | Señal | Componente | Conexión | GPIO |
 |---|---|---|---|
-| Ignición | Jumper (sirve de llave) | Pin a 3.3 V con resistencia de 10 kΩ; jumper del pin a GND = encendido | 34 |
+| Ignición | Botón de presionar | Pin a 3.3 V con resistencia de 10 kΩ; botón entre el pin y GND. Cada pulsación enciende o apaga (`IGNICION_CON_BOTON` en `config.h`; en 0 funciona con un cable o switch fijo) | 34 |
 | Arranque | Botón del joystick (SW) | SW al pin, GND del joystick a GND | 16 |
 | Cambio de marcha | Eje Y del joystick (VRy) | Joystick alimentado a **3.3 V** (no a 5 V) | 35 |
 | Freno delantero | Microinterruptor de palanca | COM a GND, NO al pin | 17 |
@@ -94,7 +94,7 @@ En este modo el freno trasero (TCRT5000) pasa al **GPIO 39**, porque el 19 lo us
 
 Con el monitor serial abierto (`idf.py -p <PUERTO> flash monitor`):
 
-1. **Ignición.** Poner el jumper a GND. El monitor muestra `APAGADO -> NEUTRAL`, el LED de estado se pone
+1. **Ignición.** Presionar el botón de ignición. El monitor muestra `APAGADO -> NEUTRAL`, el LED de estado se pone
    blanco (los tres encendidos) y la LCD muestra `NEUTRAL M1` y los km.
 2. **Gasolina.** Girar el potenciómetro: la barra sube y baja. En reserva el LED rojo parpadea a 2 Hz; en
    vacío pasa a `SIN GASOLINA`, el LED de estado se pone rojo y no deja arrancar.
@@ -104,7 +104,7 @@ Con el monitor serial abierto (`idf.py -p <PUERTO> flash monitor`):
    las RPM suben con rampa a 3000, 5000, 7000 o 9000.
 5. **Frenos.** Presionar la palanca: `FRENADO`, LED rojo, la velocidad baja y el motor se detiene. Con la
    palanca y la mano frente al TCRT5000 a la vez: `FRENO ABS` en la LCD y el rojo parpadea a 5 Hz.
-6. **Memoria.** Quitar el jumper y volverlo a poner (o desconectar la placa): los km y la marcha se
+6. **Memoria.** Presionar el botón de ignición para apagar y otra vez para encender (o desconectar la placa): los km y la marcha se
    conservan porque se guardan en la NVS al apagar la ignición.
 
 ## Calibración

@@ -24,7 +24,8 @@
 #define LCD_I2C               1
 
 /* ===================== Entradas ===================== */
-/* Solo entrada, pull-up EXTERNA de 10 kΩ a 3.3 V. Jumper a GND = ignición encendida */
+/* Solo entrada, pull-up EXTERNA de 10 kΩ a 3.3 V. Botón de ignición a GND
+ * (o cable/jumper si IGNICION_CON_BOTON = 0 en config.h) */
 #define PIN_SW_IGNICION       GPIO_NUM_34
 
 /* Eje Y del joystick (ADC1 canal 7). Joystick alimentado a 3.3 V */
